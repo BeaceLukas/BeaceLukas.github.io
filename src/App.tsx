@@ -50,6 +50,11 @@ function formatDate(dateString: string): string {
   return d.toLocaleDateString("de-DE");
 }
 
+function formatDateObj(date: Date): string {
+  if (Number.isNaN(date.getTime())) return "__________";
+  return date.toLocaleDateString("de-DE");
+}
+
 function monthsBetween(startDate: string, endDate: string): number {
   const start = new Date(startDate);
   const end = new Date(endDate);
@@ -59,6 +64,56 @@ function monthsBetween(startDate: string, endDate: string): number {
   months += end.getMonth() - start.getMonth();
   if (end.getDate() < start.getDate()) months--;
   return months;
+}
+
+function addDays(date: Date, days: number): Date {
+  const result = new Date(date);
+  result.setDate(result.getDate() + days);
+  return result;
+}
+
+function addMonths(date: Date, months: number): Date {
+  const result = new Date(date);
+  result.setMonth(result.getMonth() + months);
+  return result;
+}
+
+function endOfMonth(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth() + 1, 0);
+}
+
+function getKuendigungsfristInfo(eintritt: string, pruefdatum: string): { minDate: Date; text: string } | null {
+  const entry = new Date(eintritt);
+  const review = new Date(pruefdatum);
+  if (Number.isNaN(entry.getTime()) || Number.isNaN(review.getTime())) return null;
+
+  const monthsInCompany = monthsBetween(eintritt, pruefdatum);
+  const yearsInCompany = Math.max(0, monthsInCompany / 12);
+
+  if (yearsInCompany < 2) {
+    return {
+      minDate: addDays(review, 28),
+      text: "Mindestens 4 Wochen (28 Tage) sowie Termin zum 15. oder Monatsende.",
+    };
+  }
+
+  let requiredMonths = 1;
+  if (yearsInCompany >= 20) requiredMonths = 7;
+  else if (yearsInCompany >= 15) requiredMonths = 6;
+  else if (yearsInCompany >= 12) requiredMonths = 5;
+  else if (yearsInCompany >= 10) requiredMonths = 4;
+  else if (yearsInCompany >= 8) requiredMonths = 3;
+  else if (yearsInCompany >= 5) requiredMonths = 2;
+
+  const minDate = endOfMonth(addMonths(review, requiredMonths));
+  return {
+    minDate,
+    text: `Mindestens ${requiredMonths} Monat(e) zum Monatsende gemäß §622 BGB.`,
+  };
+}
+
+function isLastDayOfMonth(date: Date): boolean {
+  return date.getDate() === endOfMonth(date).getDate();
 }
 
 function humanizeWichtigerGrund(value: WichtigerGrund): string {
@@ -277,6 +332,8 @@ export default function App() {
     .checklist { margin: 0; padding-left: 18px; color: #155e75; }
     .section-title { margin: 24px 0 12px; padding-bottom: 8px; border-bottom: 2px solid #e5e7eb; color: #0f172a; font-size: 1.05rem; font-weight: bold; }
     .section-info { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; color: #334155; font-size: 0.92rem; line-height: 1.5; }
+    .section-info p { margin: 0 0 8px; }
+    .section-info p:last-child { margin-bottom: 0; }
     .learn-box { background: #f8fafc; border: 1px solid #dbeafe; border-left: 5px solid var(--primary); border-radius: 12px; padding: 14px; margin-top: 12px; }
     .learn-box h4 { margin: 0 0 8px; font-size: 0.98rem; color: #0f172a; }
     .learn-box p, .learn-box ul { margin: 0; color: #334155; font-size: 0.92rem; line-height: 1.5; }
@@ -419,9 +476,9 @@ export default function App() {
         gruende.push("Der Betriebsrat wurde nicht angehört.");
       }
       if (kschgGilt) {
-        gruende.push("Allgemeiner Kündigungsschutz nach KSchG ist anwendbar.");
+        gruende.push(`Allgemeiner Kündigungsschutz nach KSchG ist anwendbar (mehr als 10 Mitarbeiter und Betriebszugehörigkeit mindestens 6 Monate; hier: ${mitarbeiterzahl} Mitarbeiter, ${betriebszugehoerigkeitMonate} Monate).`);
       } else {
-        warnungen.push("Allgemeiner Kündigungsschutz nach KSchG greift hier voraussichtlich nicht.");
+        warnungen.push(`Allgemeiner Kündigungsschutz nach KSchG greift hier voraussichtlich nicht (hier: ${mitarbeiterzahl} Mitarbeiter, ${betriebszugehoerigkeitMonate} Monate Betriebszugehörigkeit).`);
       }
       if (form.ordGrund === "verhaltensbedingt" && form.abmahnung !== "ja") {
         kuendbar = false;
@@ -434,6 +491,32 @@ export default function App() {
       }
       if (!form.kuendigungstermin) {
         warnungen.push("Kein Kündigungstermin angegeben.");
+      } else {
+        const termin = new Date(form.kuendigungstermin);
+        const pruefdatum = new Date(form.heute);
+        const fristInfo = getKuendigungsfristInfo(form.eintritt, form.heute);
+        if (!Number.isNaN(termin.getTime()) && !Number.isNaN(pruefdatum.getTime()) && fristInfo) {
+          if (termin < fristInfo.minDate) {
+            kuendbar = false;
+            statusClass = "bad";
+            statusText = "Geplanter Kündigungstermin ist nicht fristgerecht.";
+            gruende.push(`Der Kündigungstermin ${formatDate(form.kuendigungstermin)} liegt vor der Mindestfrist. Erforderlich: frühestens ${formatDateObj(fristInfo.minDate)}.`);
+          }
+          const yearsInCompany = monthsBetween(form.eintritt, form.heute) / 12;
+          if (yearsInCompany < 2 && termin.getDate() !== 15 && !isLastDayOfMonth(termin)) {
+            kuendbar = false;
+            statusClass = "bad";
+            statusText = "Geplanter Kündigungstermin entspricht nicht den gesetzlichen Stichtagen.";
+            gruende.push("Bei unter 2 Jahren Betriebszugehörigkeit muss der Termin auf den 15. oder das Monatsende fallen.");
+          }
+          if (yearsInCompany >= 2 && !isLastDayOfMonth(termin)) {
+            kuendbar = false;
+            statusClass = "bad";
+            statusText = "Geplanter Kündigungstermin entspricht nicht den gesetzlichen Stichtagen.";
+            gruende.push("Bei längerer Betriebszugehörigkeit muss die Kündigung zum Monatsende wirksam werden.");
+          }
+          warnungen.push(`Fristenprüfung: ${fristInfo.text}`);
+        }
       }
     }
 
@@ -558,7 +641,10 @@ export default function App() {
           </div>
 
           <div className="section-title">Grunddaten</div>
-          <div className="section-info">In diesem Bereich werden die wichtigsten Stammdaten erfasst. Besonders wichtig sind Eintrittsdatum, Prüfdatum und die Anzahl der Mitarbeiter im Betrieb. Zusätzlich gilt: Arbeitsvertragliche oder tarifvertragliche Abmachungen können für den Arbeitnehmer günstigere Regelungen enthalten. Auch diese besonderen Kündigungsschutzregeln müssen immer separat geprüft werden.</div>
+          <div className="section-info">
+            <p>In diesem Bereich werden die wichtigsten Stammdaten erfasst. Besonders wichtig sind Eintrittsdatum, Prüfdatum und die Anzahl der Mitarbeiter im Betrieb.</p>
+            <p>Zusätzlich gilt: Arbeitsvertragliche oder tarifvertragliche Abmachungen können für den Arbeitnehmer günstigere Regelungen enthalten. Auch diese besonderen Kündigungsschutzregeln müssen immer separat geprüft werden.</p>
+          </div>
           <div className="form-grid">
             <div>
               <label htmlFor="firma">Firma</label>
@@ -627,6 +713,10 @@ export default function App() {
           </div>
 
           <div className="section-title">Sonderkündigungsschutz</div>
+          <div className="section-info">
+            <p>Bei den folgenden Personengruppen gelten besondere gesetzliche Schutzvorschriften. Eine Kündigung ist dann häufig nur mit behördlicher Zustimmung oder gar nicht möglich.</p>
+            <p>Die Auswahl dient als Vorprüfung und ersetzt keine juristische Einzelfallbewertung.</p>
+          </div>
           <div className="checkbox-group">
             <label className="checkbox-item"><input type="checkbox" checked={form.schwanger} onChange={(e) => setField("schwanger", e.target.checked)} /> Mitarbeiterin ist schwanger</label>
             <label className="checkbox-item"><input type="checkbox" checked={form.elternzeit} onChange={(e) => setField("elternzeit", e.target.checked)} /> Mitarbeiter befindet sich in Elternzeit</label>
@@ -638,6 +728,10 @@ export default function App() {
           {form.kuendigungsart === "ordentlich" && (
             <>
               <div className="section-title">Prüfung ordentliche Kündigung</div>
+              <div className="section-info">
+                <p>Der geplante Kündigungstermin muss die gesetzliche Kündigungsfrist einhalten und auf einen zulässigen Stichtag fallen.</p>
+                <p>Dabei werden Eintrittsdatum und Prüfdatum berücksichtigt, damit die Frist nach §622 BGB nachvollziehbar geprüft wird.</p>
+              </div>
               <div className="form-grid">
                 <div>
                   <label htmlFor="ordGrund">Kündigungsgrund</label>
@@ -673,6 +767,10 @@ export default function App() {
           {form.kuendigungsart === "ausserordentlich" && (
             <>
               <div className="section-title">Prüfung außerordentliche Kündigung</div>
+              <div className="section-info">
+                <p>Eine außerordentliche Kündigung beendet das Arbeitsverhältnis sofort und erfordert einen wichtigen, nachweisbaren Grund.</p>
+                <p>Der Sachverhalt sollte so konkret wie möglich dokumentiert werden, um die Wirksamkeit der Maßnahme zu sichern.</p>
+              </div>
               <div className="form-grid">
                 <div className="full">
                   <label htmlFor="wichtigerGrund">Wichtiger Grund</label>
